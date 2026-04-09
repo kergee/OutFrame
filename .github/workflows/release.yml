@@ -12,10 +12,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - os: macos-15
             target: x86_64-apple-darwin
             label: macOS-Intel
-          - os: macos-latest
+          - os: macos-26
             target: aarch64-apple-darwin
             label: macOS-Apple-Silicon
           - os: windows-latest
@@ -34,7 +34,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
       - name: Install Rust
