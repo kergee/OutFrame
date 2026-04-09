@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:sspai.com)",
+      "WebFetch(domain:apps.apple.com)",
+      "WebFetch(domain:www.jsdelivr.com)",
+      "WebFetch(domain:cdn.jsdelivr.net)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:staticimgly.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:api.github.com)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('version:', d.get\\('version'\\)\\); print\\('main:', d.get\\('main'\\)\\); print\\('module:', d.get\\('module'\\)\\); [print\\('dep:', k, v\\) for k,v in d.get\\('dependencies',{}\\).items\\(\\)]\")",
+      "Bash(curl:*)",
+      "Read(//tmp/**)",
+      "Bash(npm install:*)",
+      "Bash(node:*)",
+      "Bash(npm run:*)",
+      "Bash(screencapture -x /tmp/ioutbox_screen.png)",
+      "WebSearch",
+      "WebFetch(domain:www.npmjs.com)",
+      "Bash(chmod +x /Users/kergeechang/VibeCoding/iOutBox-Android/scripts/download-depth-model.sh)",
+      "Read(//usr/local/share/android-commandlinetools/**)",
+      "Read(//opt/homebrew/share/**)",
+      "Read(//usr/local/**)",
+      "Bash(rustc --version)",
+      "Bash(cargo --version)",
+      "Bash(npx tauri:*)",
+      "Bash(npx @tauri-apps/cli icon --help)",
+      "Bash(python3 -c ':*)",
+      "Bash(python3:*)",
+      "Bash(npx vite:*)"
+    ]
+  }
+}

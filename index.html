@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>iOutBox · 伪3D照片</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="app">
+
+    <!-- Header -->
+    <header class="app-header">
+      <div class="app-logo">iOutBox</div>
+      <div class="app-sub">伪3D照片制作</div>
+    </header>
+
+    <!-- Step 1: Upload -->
+    <section class="upload-section" id="uploadSection">
+      <div class="upload-zone" id="uploadZone">
+        <input type="file" id="fileInput" accept="image/*" hidden>
+        <div class="upload-icon-wrap">
+          <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+            <circle cx="12" cy="13" r="4"/>
+          </svg>
+        </div>
+        <div class="upload-title">选择照片</div>
+        <div class="upload-desc">点击上传，或将照片拖放到此处</div>
+        <div class="upload-hint">人像、宠物、物品均可</div>
+      </div>
+    </section>
+
+    <!-- Step 2: Workspace -->
+    <section class="workspace" id="workspace" hidden>
+
+      <!-- Canvas preview -->
+      <div class="canvas-wrap">
+        <canvas id="outputCanvas"></canvas>
+        <div class="loading-overlay" id="loadingOverlay" hidden>
+          <div class="loader-ring"></div>
+          <div class="loader-text" id="loadingText">处理中...</div>
+          <div class="loader-sub" id="loadingProgress"></div>
+        </div>
+      </div>
+
+      <!-- Controls panel -->
+      <div class="controls-panel">
+
+        <!-- Background color -->
+        <div class="ctrl-group">
+          <span class="ctrl-label">背景颜色</span>
+          <div class="swatches" id="bgColorOptions">
+            <button class="swatch active" data-color="warm-white" style="--c:#F2EDE4" title="温白"></button>
+            <button class="swatch" data-color="charcoal"    style="--c:#1C1C1E" title="炭黑"></button>
+            <button class="swatch" data-color="sage"        style="--c:#7A9E8C" title="鼠尾草"></button>
+            <button class="swatch" data-color="dusty-blue"  style="--c:#8394A8" title="雾蓝"></button>
+          </div>
+        </div>
+
+        <!-- Frame style -->
+        <div class="ctrl-group">
+          <span class="ctrl-label">相框风格</span>
+          <div class="tab-group" id="frameOptions">
+            <button class="tab active"   data-frame="polaroid">拍立得</button>
+            <button class="tab"          data-frame="classic">经典</button>
+            <button class="tab"          data-frame="dark">暗色</button>
+            <button class="tab"          data-frame="minimal">极简</button>
+          </div>
+        </div>
+
+        <!-- Aspect ratio -->
+        <div class="ctrl-group">
+          <span class="ctrl-label">画幅比例</span>
+          <div class="tab-group" id="ratioOptions">
+            <button class="tab"        data-ratio="16:9">16:9</button>
+            <button class="tab"        data-ratio="4:3">4:3</button>
+            <button class="tab"        data-ratio="3:2">3:2</button>
+            <button class="tab active" data-ratio="1:1">1:1</button>
+            <button class="tab"        data-ratio="4:5">4:5</button>
+            <button class="tab"        data-ratio="9:16">9:16</button>
+          </div>
+        </div>
+
+        <!-- Border editor 四边边框 -->
+        <div class="ctrl-group">
+          <span class="ctrl-label">边框宽度</span>
+          <div class="border-editor">
+            <div class="be-top">
+              <input type="number" id="borderTop" class="border-input" value="16" min="0" max="200">
+            </div>
+            <div class="be-mid">
+              <input type="number" id="borderLeft" class="border-input" value="16" min="0" max="200">
+              <div class="be-center"></div>
+              <input type="number" id="borderRight" class="border-input" value="16" min="0" max="200">
+            </div>
+            <div class="be-bottom">
+              <input type="number" id="borderBottom" class="border-input" value="72" min="0" max="200">
+            </div>
+          </div>
+        </div>
+
+        <!-- Overflow 出框程度（每边独立 %） -->
+        <div class="ctrl-group">
+          <span class="ctrl-label">出框程度（%）</span>
+          <div class="border-editor">
+            <div class="be-top">
+              <input type="number" id="overflowTop" class="border-input" value="60" min="0" max="150">
+            </div>
+            <div class="be-mid">
+              <input type="number" id="overflowLeft" class="border-input" value="20" min="0" max="150">
+              <div class="be-center"></div>
+              <input type="number" id="overflowRight" class="border-input" value="20" min="0" max="150">
+            </div>
+            <div class="be-bottom">
+              <input type="number" id="overflowBottom" class="border-input" value="0" min="0" max="150">
+            </div>
+          </div>
+        </div>
+
+        <!-- Label position 文字位置 -->
+        <div class="ctrl-group">
+          <span class="ctrl-label">参数文字位置</span>
+          <div class="tab-group" id="labelPosOptions">
+            <button class="tab"        data-pos="top">上</button>
+            <button class="tab active" data-pos="bottom">下</button>
+            <button class="tab"        data-pos="left">左</button>
+            <button class="tab"        data-pos="right">右</button>
+          </div>
+        </div>
+
+        <!-- Camera brand -->
+        <div class="ctrl-group ctrl-row">
+          <span class="ctrl-label">相机品牌</span>
+          <select id="brandSelect" class="brand-select">
+            <option value="">无</option>
+            <option>iPhone</option>
+            <option>Canon</option>
+            <option>Sony</option>
+            <option>Nikon</option>
+            <option>Fujifilm</option>
+            <option>Leica</option>
+            <option>Hasselblad</option>
+            <option>DJI</option>
+            <option>Ricoh</option>
+            <option>Sigma</option>
+            <option>Pentax</option>
+            <option>Panasonic</option>
+          </select>
+        </div>
+
+        <!-- Show EXIF -->
+        <div class="ctrl-group ctrl-row">
+          <span class="ctrl-label">显示拍摄参数</span>
+          <label class="ios-switch">
+            <input type="checkbox" id="showExif" checked>
+            <span class="switch-track"></span>
+          </label>
+        </div>
+
+        <!-- Action buttons -->
+        <div class="actions">
+          <button class="btn btn-ghost" id="resetBtn" title="恢复默认参数">
+            <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"/></svg>
+            重置
+          </button>
+          <button class="btn btn-ghost" id="changePhotoBtn">
+            <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 3a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V5a2 2 0 00-2-2H4zm12 12H4l4-8 3 6 2-4 3 6z" clip-rule="evenodd"/></svg>
+            更换照片
+          </button>
+          <button class="btn btn-primary" id="generateBtn">
+            <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd"/></svg>
+            生成效果
+          </button>
+          <button class="btn btn-ghost" id="downloadBtn" disabled>
+            <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+            保存
+          </button>
+        </div>
+
+      </div>
+    </section>
+
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/exif-js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
