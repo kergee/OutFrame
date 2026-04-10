@@ -9,6 +9,7 @@
 # Binary files - no line ending conversion
 *.wasm binary
 *.onnx binary
+public/models/* binary
 *.png  binary
 *.jpg  binary
 *.ico  binary
