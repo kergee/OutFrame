@@ -1,0 +1,15 @@
+* text=auto
+
+# Force LF for JS/TS files to prevent CRLF size mismatch on Windows
+*.js   text eol=lf
+*.mjs  text eol=lf
+*.cjs  text eol=lf
+*.ts   text eol=lf
+
+# Binary files - no line ending conversion
+*.wasm binary
+*.onnx binary
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.icns binary
