@@ -1,5 +1,5 @@
 // ============================================================
-// iOutBox - 伪3D照片制作
+// OutFrame - 伪3D照片制作
 // 核心逻辑：AI抠图 + Canvas合成"出框"3D效果
 // ============================================================
 
@@ -847,7 +847,7 @@ document.getElementById('resetBtn').addEventListener('click', () => {
 
 $downloadBtn.addEventListener('click', () => {
   const a = document.createElement('a');
-  a.download = `iOutBox_${Date.now()}.png`;
+  a.download = `OutFrame_${Date.now()}.png`;
   a.href = $canvas.toDataURL('image/png');
   a.click();
 });
