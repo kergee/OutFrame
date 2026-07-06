@@ -103,6 +103,24 @@ async function main() {
   }
   console.log(' ✓');
 
+  // ── ORT 运行时文件：从 node_modules 拷贝到 public/onnxruntime-web/ ──
+  // 深度估计的 ort 是动态 import 的 node_modules 版本，运行时 wasm/mjs 必须
+  // 与之版本一致，因此直接拷贝而不是从 CDN 下载
+  const ORT_SRC = path.resolve(__dirname, '..', 'node_modules', 'onnxruntime-web', 'dist');
+  const ORT_OUT = path.resolve(__dirname, '..', 'public', 'onnxruntime-web');
+  const ORT_FILES = [
+    'ort-wasm-simd-threaded.mjs',
+    'ort-wasm-simd-threaded.wasm',
+    'ort-wasm-simd-threaded.jsep.mjs',
+    'ort-wasm-simd-threaded.jsep.wasm',
+  ];
+  fs.mkdirSync(ORT_OUT, { recursive: true });
+  console.log('\n📦 拷贝 ONNX Runtime 运行时文件（node_modules → public/onnxruntime-web/）');
+  for (const f of ORT_FILES) {
+    fs.copyFileSync(path.join(ORT_SRC, f), path.join(ORT_OUT, f));
+    console.log(`   ${f} ✓`);
+  }
+
   console.log(`\n✅ 完成！文件已保存到 public/models/`);
   console.log('   现在运行:  npm run dev\n');
 }

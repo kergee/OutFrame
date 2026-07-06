@@ -4,12 +4,17 @@ node_modules/
 # Build output
 dist/
 
+# Downloaded model/runtime assets
+public/models/
+public/onnxruntime-web/
+
 # Tauri build output
 src-tauri/target/
 
 # Local env
 .env
 .env.local
+.claude/
 
 # macOS
 .DS_Store
@@ -17,5 +22,3 @@ src-tauri/target/
 # Logs
 *.log
 npm-debug.log*
-
-README.md

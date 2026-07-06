@@ -9,6 +9,9 @@ import { removeBackground } from '@imgly/background-removal';
 // 模型文件路径：必须是绝对 URL，动态拼当前 origin
 const MODEL_PUBLIC_PATH = new URL('/models/', window.location.href).toString();
 
+// WebGPU 可用时走 GPU 推理（比 WASM 快约一个数量级），失败自动回退 WASM
+const HAS_WEBGPU = !!navigator.gpu;
+
 // ----------------------------------------------------------------
 // 配置
 // ----------------------------------------------------------------
@@ -80,6 +83,7 @@ const state = {
   originalImage: null,
   originalFile:  null,
   subjectImage:  null,
+  subjectBox:    null,   // 主体 alpha 包围盒（归一化），渲染时用于避免 cover 裁剪切到主体
   depthMap:      null,   // Float32Array depth data from Depth Anything V2
   exifData:      null,
   generated:     false,
@@ -140,8 +144,22 @@ $fileInput.addEventListener('change', (e) => {
 });
 
 async function loadPhoto(file) {
+  // 先解码，失败则不改动任何状态（典型场景：浏览器不支持的 HEIC）
+  let img;
+  try {
+    img = await loadImageFromFile(file);
+  } catch {
+    alert('无法读取这张照片：浏览器不支持该格式（如 HEIC），请先转换为 JPG 或 PNG。');
+    return;
+  }
+
+  photoGeneration++;      // 作废仍在进行的旧照片提取任务
+  extractPromise = null;
   state.originalFile  = file;
+  state.originalImage = img;
   state.subjectImage  = null;
+  state.subjectBox    = null;
+  state.depthMap      = null;
   state.generated     = false;
   $downloadBtn.disabled = true;
   $generateBtn.textContent = '生成效果';
@@ -149,7 +167,9 @@ async function loadPhoto(file) {
   // 读取EXIF
   state.exifData = await readExif(file).catch(() => null);
 
-  // 自动从EXIF识别相机品牌
+  // 自动从EXIF识别相机品牌；识别不到时清除上一张照片残留的品牌
+  state.options.brand = '';
+  $brandSelect.value  = '';
   if (state.exifData?.make) {
     const make = state.exifData.make.toLowerCase();
     const brands = {
@@ -166,8 +186,6 @@ async function loadPhoto(file) {
       }
     }
   }
-
-  state.originalImage = await loadImageFromFile(file);
 
   // 根据照片横竖自动选择最接近的比例
   autoSelectRatio(state.originalImage.width, state.originalImage.height);
@@ -204,7 +222,7 @@ function readExif(file) {
         URL.revokeObjectURL(url);
       });
     };
-    img.onerror = () => resolve(null);
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
     img.src = url;
   });
 }
@@ -217,8 +235,8 @@ function loadImageFromFile(file) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = reject;
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
     img.src = url;
   });
 }
@@ -227,8 +245,8 @@ function loadImageFromBlob(blob) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(blob);
     const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = reject;
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
     img.src = url;
   });
 }
@@ -278,23 +296,28 @@ async function getOrt() {
   if (_ort) return _ort;
   // 动态 import，让 @imgly 先完成自己的 ort 初始化
   _ort = await import('onnxruntime-web');
-  _ort.env.wasm.wasmPaths = MODEL_PUBLIC_PATH;
+  // 运行时文件由 scripts/download-models.js 从 node_modules 拷贝，保证与 JS 版本匹配
+  _ort.env.wasm.wasmPaths = new URL('/onnxruntime-web/', window.location.href).toString();
   return _ort;
 }
 
 async function loadDepthSession() {
   if (_depthSession) return _depthSession;
-  try {
-    const ort = await getOrt();
-    _depthSession = await ort.InferenceSession.create(
-      MODEL_PUBLIC_PATH + 'depth-anything-v2-small.onnx',
-      { executionProviders: ['wasm'] }
-    );
-    return _depthSession;
-  } catch (e) {
-    console.warn('深度模型未找到，跳过深度优化（运行 npm run download 可下载）');
-    return null;
+  const ort = await getOrt().catch(() => null);
+  if (!ort) return null;
+  const url = MODEL_PUBLIC_PATH + 'depth-anything-v2-small.onnx';
+  // 依次尝试执行后端：WebGPU 初始化失败（驱动/浏览器差异）时回退 WASM
+  const providers = HAS_WEBGPU ? [['webgpu'], ['wasm']] : [['wasm']];
+  for (const ep of providers) {
+    try {
+      _depthSession = await ort.InferenceSession.create(url, { executionProviders: ep });
+      return _depthSession;
+    } catch (e) {
+      if (ep[0] === 'webgpu') console.warn('深度模型 WebGPU 初始化失败，回退 WASM:', e.message);
+    }
   }
+  console.warn('深度模型未找到，跳过深度优化（运行 npm run download 可下载）');
+  return null;
 }
 
 async function estimateDepth(image) {
@@ -366,16 +389,40 @@ async function applyDepthToSubject(subjectImg, depthResult) {
   );
 }
 
+// 边缘羽化：把模糊后的 alpha 作为蒙版（destination-in）向内软化边缘，
+// 消除分割锯齿且不产生颜色光晕；不支持 ctx.filter 的浏览器结果等同原图
+function featherAlpha(img) {
+  const W = img.width, H = img.height;
+  // 半径随原图分辨率缩放，保证缩小渲染后仍有约 2px 羽化
+  const r = Math.max(2, Math.min(12, Math.round(Math.min(W, H) / 400)));
+
+  const mask = document.createElement('canvas');
+  mask.width = W;  mask.height = H;
+  const mctx = mask.getContext('2d');
+  mctx.filter = `blur(${r}px)`;
+  mctx.drawImage(img, 0, 0);
+
+  const out = document.createElement('canvas');
+  out.width = W;  out.height = H;
+  const octx = out.getContext('2d');
+  octx.drawImage(img, 0, 0);
+  octx.globalCompositeOperation = 'destination-in';
+  octx.drawImage(mask, 0, 0);
+  return out;
+}
+
 // ----------------------------------------------------------------
 // 主体提取（上传后自动触发，结果缓存）
 // ----------------------------------------------------------------
 
 let extractPromise = null; // 缓存当前提取任务，避免重复运行
+let photoGeneration = 0;   // 每次换照片递增；提取任务据此判断自己是否已过期
 
 async function extractSubject(forceRedo = false) {
   if (!state.originalFile) return;
   if (forceRedo) {
     state.subjectImage = null;
+    state.subjectBox   = null;
     state.depthMap     = null;
     extractPromise     = null;
   }
@@ -391,18 +438,30 @@ async function extractSubject(forceRedo = false) {
   showLoading('正在加载模型...');
   $loadingProg.textContent = '首次运行需几秒';
 
+  const gen = photoGeneration; // 提取期间换了照片则本任务作废
   extractPromise = (async () => {
     try {
       // 先完成背景去除，再跑深度估计（避免两个 ort 实例同时初始化冲突）
-      const blob = await removeBackground(state.originalFile, {
+      const rbConfig = (device) => ({
         publicPath: MODEL_PUBLIC_PATH,
         model: 'isnet_fp16',
+        device,
         output: { format: 'image/png', quality: 0.85 },
         progress: (key) => {
+          if (gen !== photoGeneration) return;
           showLoading(key.startsWith('fetch:') ? '正在加载模型...' : '正在提取主体...');
           $loadingProg.textContent = '';
         },
       });
+      let blob;
+      try {
+        blob = await removeBackground(state.originalFile, rbConfig(HAS_WEBGPU ? 'gpu' : 'cpu'));
+      } catch (err) {
+        if (!HAS_WEBGPU) throw err;
+        console.warn('WebGPU 抠图失败，回退 WASM:', err.message);
+        blob = await removeBackground(state.originalFile, rbConfig('cpu'));
+      }
+      if (gen !== photoGeneration) return;
 
       showLoading('正在分析深度...');
       const depthResult = await estimateDepth(state.originalImage).catch(() => null);
@@ -411,12 +470,17 @@ async function extractSubject(forceRedo = false) {
 
       // 用深度图软化远景，强化出框近景
       if (depthResult) {
-        state.depthMap = depthResult;
         showLoading('正在深度优化...');
         subjectImg = await applyDepthToSubject(subjectImg, depthResult);
       }
 
+      // 边缘羽化，消除分割边界锯齿
+      subjectImg = featherAlpha(subjectImg);
+      if (gen !== photoGeneration) return;
+
+      state.depthMap     = depthResult;
       state.subjectImage = subjectImg;
+      state.subjectBox   = computeSubjectBox(subjectImg);
       await tick();
       renderEffect();
       state.generated = true;
@@ -424,12 +488,16 @@ async function extractSubject(forceRedo = false) {
       $generateBtn.textContent = '重新生成';
 
     } catch (err) {
+      if (gen !== photoGeneration) return;
       console.error(err);
       alert('提取失败：' + err.message);
     } finally {
-      hideLoading();
-      $generateBtn.disabled = false;
-      extractPromise = null;
+      // 过期任务不得触碰 UI 状态——新照片的提取正在使用这些控件
+      if (gen === photoGeneration) {
+        hideLoading();
+        $generateBtn.disabled = false;
+        extractPromise = null;
+      }
     }
   })();
 
@@ -461,7 +529,7 @@ function tick() {
 // ----------------------------------------------------------------
 
 function renderEffect() {
-  const { originalImage, subjectImage, options, exifData } = state;
+  const { originalImage, subjectImage, subjectBox, options, exifData } = state;
   const [cw, ch] = ASPECT_RATIOS[options.aspectRatio];
   const frame = FRAME_CONFIGS[options.frameStyle];
   const bgColor = BG_COLORS[options.bgColor];
@@ -546,38 +614,58 @@ function renderEffect() {
   const totalH = photoH * (1 + ov.top  / 100 + ov.bottom / 100);
 
   // ── 6. 相框内的照片（cover 填充 totalArea，裁切到 photoArea）──
+  // 已有抠图主体时做景深处理：框内背景虚化压暗，步骤 8 再叠清晰主体，
+  // 形成"主体锐、背景虚"的大光圈景深感（不支持 ctx.filter 时退化为原图）
   ctx.save();
   ctx.beginPath();
   roundRect(ctx, photoX, photoY, photoW, photoH,
             Math.max(0, frame.radius - 2));
   ctx.clip();
-  drawImageCover(ctx, originalImage, totalX, totalY, totalW, totalH);
+  if (subjectImage) {
+    const dofBlur = Math.max(4, Math.round(photoW * 0.011));
+    ctx.filter = `blur(${dofBlur}px) brightness(0.92) saturate(0.9)`;
+  }
+  drawImageCover(ctx, originalImage, totalX, totalY, totalW, totalH, subjectBox);
+  ctx.filter = 'none';
   ctx.restore();
 
   // ── 7. 标签（品牌 + EXIF），位置由 options.labelPos 决定）──
   drawFrameLabel(ctx, frameX, frameY, frameW, frameH, frame, options, exifData, b);
 
-  // ── 8. 出框主体（偶奇裁切）──
+  // ── 8. 主体层 ──
   //
-  // 抠图与相框内照片用完全相同的 cover-fit 参数绘制，像素严格对齐。
-  // 偶奇规则把「照片内容区」从绘制区域挖掉：
-  //   - 相框内   → 纯净原始照片（不受抠图质量影响）
+  // 抠图主体与框内照片共用同一 totalArea 做 cover-fit，直接叠加在整个画面上：
+  //   - 相框内   → 清晰主体压在虚化照片上（景深感）
   //   - 相框边框 → 主体叠盖边框，视觉上"主体在相框前方"
   //   - 相框外   → 主体无背景，产生伪3D错觉
+  // 主体层以照片区中心微放大，模拟"近大远小"的透视，增强出框冲击力
   //
   if (subjectImage) {
+    const POP = 1.045;
+    const pcx = photoX + photoW / 2;
+    const pcy = photoY + photoH / 2;
+
     ctx.save();
-    ctx.beginPath();
-    ctx.rect(0, 0, cw, ch);                              // 外：全画布
-    addRoundRect(ctx, photoX, photoY, photoW, photoH,    // 内：照片区（偶奇挖空）
-                 Math.max(0, frame.radius - 2));
-    ctx.clip('evenodd');
-    // 投影：让主体在相框前方产生立体感
-    ctx.shadowColor   = 'rgba(0,0,0,0.6)';
-    ctx.shadowBlur    = 40;
-    ctx.shadowOffsetX = 0;
-    ctx.shadowOffsetY = 16;
-    drawImageCover(ctx, subjectImage, totalX, totalY, totalW, totalH);
+    ctx.translate(pcx, pcy);
+    ctx.scale(POP, POP);
+    ctx.translate(-pcx, -pcy);
+
+    // 双层阴影：先把主体画到画布外一个画布宽，用 shadowOffsetX 把阴影偏回原位，
+    // 得到"只有阴影"的两个通道。shadow 偏移量不受 CTM 缩放影响，故乘 POP 补偿。
+    const shift = cw * POP;
+    ctx.shadowOffsetX = shift;
+    ctx.shadowColor   = 'rgba(0,0,0,0.32)';  // 大范围软阴影，落在背景上
+    ctx.shadowBlur    = 70;
+    ctx.shadowOffsetY = 30;
+    drawImageCover(ctx, subjectImage, totalX - cw, totalY, totalW, totalH, subjectBox);
+    ctx.shadowColor   = 'rgba(0,0,0,0.40)';  // 贴框接触阴影，短而实
+    ctx.shadowBlur    = 12;
+    ctx.shadowOffsetY = 8;
+    drawImageCover(ctx, subjectImage, totalX - cw, totalY, totalW, totalH, subjectBox);
+
+    // 主体本体（无阴影）
+    ctx.shadowColor = 'transparent';
+    drawImageCover(ctx, subjectImage, totalX, totalY, totalW, totalH, subjectBox);
     ctx.restore();
   }
 }
@@ -674,7 +762,9 @@ function addRoundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-function drawImageCover(ctx, img, x, y, w, h) {
+// cover-fit 绘制。subjBox（可选，归一化 0-1 的主体包围盒）用于调整源图裁剪窗口，
+// 避免 cover 裁剪把主体切掉（如宽画幅下竖图裁上下时砍掉头顶）
+function drawImageCover(ctx, img, x, y, w, h, subjBox) {
   const ir = img.width / img.height;
   const ar = w / h;
   let sx, sy, sw, sh;
@@ -682,14 +772,52 @@ function drawImageCover(ctx, img, x, y, w, h) {
     sh = img.height;
     sw = sh * ar;
     sx = (img.width - sw) / 2;
+    if (subjBox) {
+      const L = subjBox.left * img.width, R = subjBox.right * img.width;
+      if (R - L > sw) sx = (L + R - sw) / 2;         // 主体比窗口宽 → 对主体居中
+      else sx = Math.min(Math.max(sx, R - sw), L);   // 平移窗口把主体完整包进来
+      sx = Math.min(Math.max(sx, 0), img.width - sw);
+    }
     sy = 0;
   } else {                // 图片更高 → 裁上下（居上偏一点）
     sw = img.width;
     sh = sw / ar;
     sx = 0;
     sy = (img.height - sh) * 0.3;  // 偏上，人物脸部一般在上方
+    if (subjBox) {
+      const T = subjBox.top * img.height, B = subjBox.bottom * img.height;
+      if (B - T > sh) sy = T;                        // 主体比窗口高 → 保头舍脚
+      else sy = Math.min(Math.max(sy, B - sh), T);
+      sy = Math.min(Math.max(sy, 0), img.height - sh);
+    }
   }
   ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
+}
+
+// 计算主体 alpha 包围盒（归一化 0-1）。降采样到 256px 扫描，代价可忽略
+function computeSubjectBox(img) {
+  const S = 256;
+  const scale = S / Math.max(img.width, img.height);
+  const w = Math.max(1, Math.round(img.width * scale));
+  const h = Math.max(1, Math.round(img.height * scale));
+  const c = document.createElement('canvas');
+  c.width = w;  c.height = h;
+  const cctx = c.getContext('2d', { willReadFrequently: true });
+  cctx.drawImage(img, 0, 0, w, h);
+  const d = cctx.getImageData(0, 0, w, h).data;
+  let top = h, bottom = -1, left = w, right = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (d[(y * w + x) * 4 + 3] > 16) {
+        if (y < top)    top = y;
+        if (y > bottom) bottom = y;
+        if (x < left)   left = x;
+        if (x > right)  right = x;
+      }
+    }
+  }
+  if (bottom < 0) return null; // 全透明，理论上不会发生
+  return { top: top / h, bottom: (bottom + 1) / h, left: left / w, right: (right + 1) / w };
 }
 
 // ----------------------------------------------------------------
