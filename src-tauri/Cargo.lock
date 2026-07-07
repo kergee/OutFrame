@@ -1547,8 +1547,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "ioutbox"
-version = "1.0.0"
+name = "outframe"
+version = "1.0.5"
 dependencies = [
  "serde",
  "serde_json",
